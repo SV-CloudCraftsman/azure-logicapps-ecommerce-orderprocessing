@@ -1,0 +1,144 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "contentVersion": "2.0.0.0",
+  "parameters": {
+    "$connections": {
+      "type": "Object"
+    }
+  },
+  "triggers": {
+    "When_Order_Received": {
+      "type": "Request",
+      "kind": "Http",
+      "inputs": {
+        "schema": {
+          "type": "object",
+          "required": [
+            "orderId",
+            "customerName",
+            "productName",
+            "quantity",
+            "price"
+          ],
+          "properties": {
+            "orderId": { "type": "string" },
+            "customerName": { "type": "string" },
+            "productName": { "type": "string" },
+            "quantity": { "type": "integer" },
+            "price": { "type": "number" }
+          }
+        }
+      }
+    }
+  },
+  "actions": {
+    "Initialize_CorrelationId": {
+      "type": "InitializeVariable",
+      "inputs": {
+        "variables": [
+          {
+            "name": "CorrelationId",
+            "type": "string",
+            "value": "@{guid()}"
+          }
+        ]
+      }
+    },
+    "Process_Order_Scope": {
+      "type": "Scope",
+      "runAfter": {
+        "Initialize_CorrelationId": ["Succeeded"]
+      },
+      "actions": {
+        "Compose_TotalAmount": {
+          "type": "Compose",
+          "inputs": "@{triggerBody()?['quantity'] * triggerBody()?['price']}"
+        },
+        "Send_Order_Email": {
+          "type": "ApiConnection",
+          "inputs": {
+            "host": {
+              "connection": {
+                "name": "@parameters('$connections')['office365']['connectionId']"
+              }
+            },
+            "method": "post",
+            "path": "/v2/Mail",
+            "body": {
+              "To": "operations@yourcompany.com",
+              "Subject": "New Order Received - @{triggerBody()?['orderId']}",
+              "Importance": "High",
+              "Body": "<h3>Order Confirmation</h3>
+                       <p><b>Correlation ID:</b> @{variables('CorrelationId')}</p>
+                       <p><b>Order ID:</b> @{triggerBody()?['orderId']}</p>
+                       <p><b>Customer:</b> @{triggerBody()?['customerName']}</p>
+                       <p><b>Product:</b> @{triggerBody()?['productName']}</p>
+                       <p><b>Quantity:</b> @{triggerBody()?['quantity']}</p>
+                       <p><b>Total Amount:</b> ₹@{outputs('Compose_TotalAmount')}</p>"
+            },
+            "retryPolicy": {
+              "type": "exponential",
+              "count": 3,
+              "interval": "PT10S"
+            }
+          }
+        }
+      }
+    },
+    "Success_Response": {
+      "type": "Response",
+      "runAfter": {
+        "Process_Order_Scope": ["Succeeded"]
+      },
+      "inputs": {
+        "statusCode": 200,
+        "body": {
+          "status": "Success",
+          "correlationId": "@{variables('CorrelationId')}",
+          "orderId": "@{triggerBody()?['orderId']}"
+        }
+      }
+    },
+    "Error_Handling_Scope": {
+      "type": "Scope",
+      "runAfter": {
+        "Process_Order_Scope": ["Failed", "TimedOut"]
+      },
+      "actions": {
+        "Send_Failure_Email": {
+          "type": "ApiConnection",
+          "inputs": {
+            "host": {
+              "connection": {
+                "name": "@parameters('$connections')['office365']['connectionId']"
+              }
+            },
+            "method": "post",
+            "path": "/v2/Mail",
+            "body": {
+              "To": "admin@yourcompany.com",
+              "Subject": "Order Processing Failed",
+              "Importance": "High",
+              "Body": "<h3>Order Processing Failed</h3>
+                       <p><b>Correlation ID:</b> @{variables('CorrelationId')}</p>
+                       <p><b>Error:</b> @{result('Process_Order_Scope')}</p>"
+            }
+          }
+        }
+      }
+    },
+    "Failure_Response": {
+      "type": "Response",
+      "runAfter": {
+        "Error_Handling_Scope": ["Succeeded"]
+      },
+      "inputs": {
+        "statusCode": 500,
+        "body": {
+          "status": "Failed",
+          "correlationId": "@{variables('CorrelationId')}"
+        }
+      }
+    }
+  }
+}
